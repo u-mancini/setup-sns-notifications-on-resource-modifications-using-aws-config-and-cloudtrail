@@ -88,122 +88,174 @@ Resources:
       Code:
         ZipFile: |
           import boto3
-          import sys
-          import time
-          import datetime as dt
-          import json
-          import os
-          import urllib.parse
-
-          def lambda_handler(event, context):
-              try:
-                  event = json.loads(event["Records"][0]["body"])["detail"]
-
-                  if event["messageType"] == "ConfigurationItemChangeNotification":
-                      CI = event["configurationItem"]
-                  elif event["messageType"] == "OversizedConfigurationItemChangeNotification":
-                      CI = event["configurationItemSummary"]
-                  else:
-                      print ("Notification messageType is neither CI change nor oversized CI change.")
-                      sys.exit()
-
-                  # Fetch Resource Type.
-                  # Terminate if ResourceType is in ignored resource type list.
-                  resourceType = CI["resourceType"]
-                  ignored_resource_type = ["AWS::Config::ResourceCompliance","AWS::Config::ConformancePackCompliance"]
-                  if resourceType in ignored_resource_type:
-                      print ("Resource Type"+resourceType+"included in discarded list - terminate")
-                      sys.exit()
-                  else:
-                      pass
-
-                  ItemCaptureTime = CI["configurationItemCaptureTime"]
-                  resourceARN = CI["ARN"]
-                  resourceId = CI["resourceId"]
-                  configurationItemStatus = CI["configurationItemStatus"]
-
-                  # Logic to fetch ResourceName or ResourceID.
-                  # Depending on the resource type, some CIs do not have a resourceName, but all CIs have at least a resourceId.
-                  if CI.get("resourceName") != None:
-                      resourceName = CI["resourceName"]
-                  elif CI.get("resourceName") == None:
-                      resourceName = CI["resourceId"]
-                  else:
-                      print ("Not able to fetch resource name or ID - terminate")
-                      sys.exit()
-
-                 # Fetch time window for Lookup.
-                  lookup_time = establish_time(ItemCaptureTime)
-                  start_lookup_time = (lookup_time[0])
-                  end_lookup_time = (lookup_time[1])
-
-                  CT_lookup(resourceName,resourceId,resourceType,resourceARN,start_lookup_time,end_lookup_time,configurationItemStatus)
-
-              except Exception as error:
-                  print (str(error))
-
-          def establish_time(ItemCaptureTime):
-              try:
-                  # Establish time window for the lookup in CTrail. CI capture is best effort after resource configuration change event, but generally in 15 mins
-                  startime = (dt.datetime.strptime(ItemCaptureTime, '%Y-%m-%dT%H:%M:%S.%fZ'))
-                  startime = (startime - dt.timedelta(seconds=900))
-                  startime = dt.datetime.strftime(startime, '%Y-%m-%dT%H:%M:%S.%fZ')
-                  endtime = ItemCaptureTime
-                  return startime, endtime
-              except Exception as error:
-                  print (str(error))
-
-          def CT_lookup(resourceName,resourceId,resourceType,resourceARN,start_lookup_time,end_lookup_time,configurationItemStatus):
-              try:
-                  # Global resources such as IAM resource types can only be lookup in CloudTrail us-east-1 region, even though Config Recorder in other region is recording them.
-                  if "AWS::IAM::" in resourceType:
-                      client = boto3.client('cloudtrail', region_name="us-east-1")
-                  else:
-                      client = boto3.client('cloudtrail')
-
-                  # Perform lookups via ResourceName, which the value is from the resourceName/Id in the CI. Allowed only 2 loops max.
-                  # Lookup by resourceType would not be helpful due to high chance of false hit. It is also redundant to verify the resourceName if lookup event by resourceType.
-                  no_events = True
-                  max_loops = 0
-                  while no_events == True:
-                      if max_loops == 2:
-                          print ("DONE - Lookup loops x"+max_loops)
-                          break
-                      else:
-                          if max_loops == 0:
-                              attribute_key = "ResourceName"
-                              attribute_value = resourceName
-                          elif max_loops == 1:
-                              attribute_key = "ResourceName"
-                              attribute_value = resourceId
-                          else:
-                              break
-                          max_loops = max_loops+1
-                          paginator = client.get_paginator('lookup_events')
-                          response_iterator = paginator.paginate(LookupAttributes=[{
-                              'AttributeKey': attribute_key,
-                              'AttributeValue': attribute_value},],
-                              StartTime=start_lookup_time,
-                              EndTime=end_lookup_time)
-                          for value in response_iterator:
-                              if (len(value["Events"])) == 0 and max_loops ==1 and resourceId != resourceName:
-                                  print ("No events for ResourceName:"+resourceName+"- trying resourceId lookup")
-                              else:
-                                  no_events = False
-                                  handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus)
-              except Exception as error:
-                  print (str(error))
-
-          def handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus):
-              try:
-                  # Handle Lookup results.
-                  # Logic to ignore read events, error events, or no resources.
-                  # Check ResourceType and ResourceName matches CI event values.
-                  sns_check_bool = False
-                  events = (value["Events"])
-
-                  lambda_runtime_region = os.environ['AWS_REGION']
-                  config_console_link = 'https://'\
+            import sys
+            import time
+            import datetime as dt
+            import json
+            import os
+            import urllib.parse
+            
+            def lambda_handler(event, context):
+                try:
+                    event = json.loads(event["Records"][0]["body"])["detail"]
+                    if event["messageType"] == "ConfigurationItemChangeNotification":
+                        CI = event["configurationItem"]
+                    elif event["messageType"] == "OversizedConfigurationItemChangeNotification":
+                        CI = event["configurationItemSummary"]
+                    else:
+                        print ("Notification messageType is neither CI change nor oversized CI change.")
+                        sys.exit()
+            
+                    # Fetch Resource Type.
+                    # Terminate if ResourceType is in ignored resource type list.
+                    resourceType = CI["resourceType"]
+                    ignored_resource_type = ["AWS::Config::ResourceCompliance","AWS::Config::ConformancePackCompliance"]
+                    if resourceType in ignored_resource_type:
+                        print ("Resource Type"+resourceType+"included in discarded list - terminate")
+                        sys.exit()
+                    else:
+                        pass
+            
+                    ItemCaptureTime = CI["configurationItemCaptureTime"]
+                    resourceARN = CI["ARN"]
+                    resourceId = CI["resourceId"]
+                    configurationItemStatus = CI["configurationItemStatus"]
+            
+                    # Logic to fetch ResourceName or ResourceID.
+                    # Depending on the resource type, some CIs do not have a resourceName, but all CIs have at least a resourceId.
+                    if CI.get("resourceName") != None:
+                        resourceName = CI["resourceName"]
+                    elif CI.get("resourceName") == None:
+                        resourceName = CI["resourceId"]
+                    else:
+                        print ("Not able to fetch resource name or ID - terminate")
+                        sys.exit()
+            
+                # Fetch time window for Lookup.
+                    lookup_time = establish_time(ItemCaptureTime)
+                    start_lookup_time = (lookup_time[0])
+                    end_lookup_time = (lookup_time[1])
+            
+                    CT_lookup(resourceName,resourceId,resourceType,resourceARN,start_lookup_time,end_lookup_time,configurationItemStatus)
+                except Exception as error:
+                    print (str(error))
+            
+            def establish_time(ItemCaptureTime):
+                try:
+                    # Establish time window for the lookup in CTrail. CI capture is best effort after resource configuration change event, but generally in 15 mins
+                    startime = (dt.datetime.strptime(ItemCaptureTime, '%Y-%m-%dT%H:%M:%S.%fZ'))
+                    startime = (startime - dt.timedelta(seconds=900))
+                    startime = dt.datetime.strftime(startime, '%Y-%m-%dT%H:%M:%S.%fZ')
+                    endtime = ItemCaptureTime
+                    return startime, endtime
+                except Exception as error:
+                    print (str(error))
+            
+            def CT_lookup(resourceName,resourceId,resourceType,resourceARN,start_lookup_time,end_lookup_time,configurationItemStatus):
+                print(resourceType)
+                try:
+                    # Global resources such as IAM resource types can only be lookup in CloudTrail us-east-1 region, even though Config Recorder in other region is recording them.
+                    if "AWS::IAM::" in resourceType:
+                        client = boto3.client('cloudtrail', region_name="us-east-1")
+                    else:
+                        client = boto3.client('cloudtrail')
+            
+                    # Perform lookups via ResourceName, which the value is from the resourceName/Id in the CI. Allowed only 2 loops max.
+                    # Lookup by resourceType would not be helpful due to high chance of false hit. It is also redundant to verify the resourceName if lookup event by resourceType.
+                    no_events = True
+                    max_loops = 0
+                    while no_events == True:
+                        if max_loops == 2:
+                            print ("DONE - Lookup loops x"+max_loops)
+                            break
+                        else:
+                            if max_loops == 0:
+                                attribute_key = "ResourceName"
+                                attribute_value = resourceName
+                                print("\n 0 attrib:",attribute_value)
+                            elif max_loops == 1:
+                                attribute_key = "ResourceName"
+                                attribute_value = resourceId
+                                print("\n 1attrib:",attribute_value)
+            
+                                
+                            else:
+                                break
+                            max_loops = max_loops+1
+                            paginator = client.get_paginator('lookup_events')
+                            
+                            
+                            if resourceType.startswith('AWS::WAFv2::'):
+                                response_iterator = paginator.paginate(LookupAttributes=[{
+                                'AttributeKey': 'EventName',
+                                'AttributeValue': 'UpdateWebACL'},],
+                                StartTime=start_lookup_time,
+                                EndTime=end_lookup_time)
+                                response_iterator1 = paginator.paginate(LookupAttributes=[{
+                                'AttributeKey': 'EventName',
+                                'AttributeValue': 'CreateWebACL'},],
+                                StartTime=start_lookup_time,
+                                EndTime=end_lookup_time)
+                                response_iterator2 = paginator.paginate(LookupAttributes=[{
+                                'AttributeKey': 'EventName',
+                                'AttributeValue': 'DeleteWebACL'},],
+                                StartTime=start_lookup_time,
+                                EndTime=end_lookup_time)
+                
+                            
+            
+                                for value in response_iterator:
+                                    if (len(value["Events"])) == 0 and max_loops ==1 and resourceId != resourceName:
+                                        print ("No events for ResourceName:"+resourceName+"- trying resourceId lookup")
+                                    else:
+                                        no_events = False
+                                        handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus)
+                                for value in response_iterator1:
+                                    if (len(value["Events"])) == 0 and max_loops ==1 and resourceId != resourceName:
+                                        print ("No events for ResourceName:"+resourceName+"- trying resourceId lookup")
+                                    else:
+                                        no_events = False
+                                        handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus)
+                                for value in response_iterator2:
+                                    if (len(value["Events"])) == 0 and max_loops ==1 and resourceId != resourceName:
+                                        print ("No events for ResourceName:"+resourceName+"- trying resourceId lookup")
+                                    else:
+                                        no_events = False
+                                        handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus)
+                            else:
+                                response_iterator = paginator.paginate(LookupAttributes=[{
+                                    'AttributeKey': "ResourceName",
+                                    'AttributeValue': attribute_value},],
+                                    StartTime=start_lookup_time,
+                                    EndTime=end_lookup_time)
+                                for value in response_iterator:
+                                    if (len(value["Events"])) == 0 and max_loops ==1 and resourceId != resourceName:
+                                        print ("No events for ResourceName:"+resourceName+"- trying resourceId lookup")
+                                    else:
+                                        no_events = False
+                                        handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus)
+                            
+                            
+                            for value in response_iterator:
+                                if (len(value["Events"])) == 0 and max_loops ==1 and resourceId != resourceName:
+                                    print ("No events for ResourceName:"+resourceName+"- trying resourceId lookup")
+                                else:
+                                    no_events = False
+                                    handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus)
+            
+                except Exception as error:
+                print (str(error))
+            
+            def handle_event(value,resourceName,resourceId,resourceType,resourceARN,end_lookup_time,configurationItemStatus):
+                try:
+                    # Handle Lookup results.
+                    # Logic to ignore read events, error events, or no resources.
+                    # Check ResourceType and ResourceName matches CI event values.
+                    sns_check_bool = False
+                    events = (value["Events"])
+            
+                    lambda_runtime_region = os.environ['AWS_REGION']
+                    config_console_link = 'https://'\
                                         +lambda_runtime_region\
                                         +'.console.aws.amazon.com/config/home?region='\
                                         +lambda_runtime_region\
@@ -211,32 +263,26 @@ Resources:
                                         +urllib.parse.quote_plus(resourceId)\
                                         +'&resourceType='\
                                         +urllib.parse.quote_plus(resourceType)
-
-                  for event in events:
-                      CloudTrailEvent = event["CloudTrailEvent"]
-                      CloudTrailEvent = json.loads(CloudTrailEvent)
-                      if (event["ReadOnly"]) == "true":
-                          print ("Read event - Ignored")
-                      elif "errorCode" in CloudTrailEvent or "errorMessage" in CloudTrailEvent:
-                          print ("Event related to erroneous call - Ignored")
-                      elif (len(event["Resources"])) == 0:
-                          print ("No resource values found - Ignored")
-                      else:
-                          for resourcevalues in (event["Resources"]):
-                              # this is to filter resource that share the same resourceName/resourceId but is actually a different resource type.
-                              if (resourcevalues["ResourceType"]) == resourceType and ((resourcevalues["ResourceName"]) == resourceName or (resourcevalues["ResourceName"]) == resourceId):
-                                  # "Root","IAMUser","AssumedRole" has userIdentity.arn in the CloudTrail event, but others do not. 
-                                  if CloudTrailEvent["userIdentity"]["type"] in ["Root","IAMUser","AssumedRole"]:
-                                      userIdentity = (CloudTrailEvent["userIdentity"]["arn"])
-                                  else:
-                                      userIdentity = "\n"+str(json.dumps(CloudTrailEvent["userIdentity"], indent=2))
-                                  EventName = (event["EventName"])
-                                  EventId = (event["EventId"])
-                                  EventTime = (event["EventTime"])
-
-                                  # Send SNS notification if CT events were found
-                                  ctrail_console_link = 'https://'+lambda_runtime_region+'.console.aws.amazon.com/cloudtrail/home?region='+lambda_runtime_region+'#/events/'+EventId
-                                  message = str("Event details logged in CloudTrail within 15 minutes before CI capture:"\
+            
+                    for event in events:
+                        CloudTrailEvent = event["CloudTrailEvent"]
+                        CloudTrailEvent = json.loads(CloudTrailEvent)
+                        if (event["ReadOnly"]) == "true":
+                            print ("Read event - Ignored")
+                        elif "errorCode" in CloudTrailEvent or "errorMessage" in CloudTrailEvent:
+                            print ("Event related to erroneous call - Ignored")
+                        elif resourceType.startswith('AWS::WAFv2::'):
+                                    if CloudTrailEvent["userIdentity"]["type"] in ["Root","IAMUser","AssumedRole"]:
+                                        userIdentity = (CloudTrailEvent["userIdentity"]["arn"])
+                                    else:
+                                        userIdentity = "\n"+str(json.dumps(CloudTrailEvent["userIdentity"], indent=2))
+                                    EventName = (event["EventName"])
+                                    EventId = (event["EventId"])
+                                    EventTime = (event["EventTime"])
+            
+                                    # Send SNS notification if CT events were found
+                                    ctrail_console_link = 'https://'+lambda_runtime_region+'.console.aws.amazon.com/cloudtrail/home?region='+lambda_runtime_region+'#/events/'+EventId
+                                    message = str("Event details logged in CloudTrail within 15 minutes before CI capture:"\
                                                 +"\n\nConfiguration Item status: "\
                                                 +configurationItemStatus\
                                                 +"\nConfiguration Item capture time: "\
@@ -259,19 +305,67 @@ Resources:
                                                 +ctrail_console_link\
                                                 +"\n\nConfig Resources console link:\n"\
                                                 +config_console_link)
-                                  subject = "Config Configuration Item change detected"
-                                  sns_notification(message,subject)
-                                  print ("SNS notification sent - Events obtained from CloudTrail")
-                                  sns_check_bool = True
-                                  break
-                              else:
-                                  print ("ResourceType and ResourceName/Id do not match.")
-
-                  # Conditional statement to check if previous SNS notification was sent.
-                  # Bool var "sns_check_bool" used for check.
-                  # if False, send notification that no events were found.
-                  if sns_check_bool == False:
-                      message = str("Script could not find any CloudTrail events within 15 minutes before CI capture for below resources. Check the Config Resources console link for more info."\
+                                    subject = "Config Configuration Item change detected"
+                                    sns_notification(message,subject)
+                                    print ("SNS notification sent - Events obtained from CloudTrail")
+                                    sns_check_bool = True
+                                    print("ct:",ctrail_console_link)
+                                    break
+                        elif (len(event["Resources"])) == 0:
+                            print ("No resource values found - Ignored")
+                            
+                            
+                        else:
+                            for resourcevalues in (event["Resources"]):
+                                # this is to filter resource that share the same resourceName/resourceId but is actually a different resource type.
+                                if (resourcevalues["ResourceType"]) == resourceType and ((resourcevalues["ResourceName"]) == resourceName or (resourcevalues["ResourceName"]) == resourceId):
+                                    # "Root","IAMUser","AssumedRole" has userIdentity.arn in the CloudTrail event, but others do not. 
+                                    if CloudTrailEvent["userIdentity"]["type"] in ["Root","IAMUser","AssumedRole"]:
+                                        userIdentity = (CloudTrailEvent["userIdentity"]["arn"])
+                                    else:
+                                        userIdentity = "\n"+str(json.dumps(CloudTrailEvent["userIdentity"], indent=2))
+                                    EventName = (event["EventName"])
+                                    EventId = (event["EventId"])
+                                    EventTime = (event["EventTime"])
+            
+                                    # Send SNS notification if CT events were found
+                                    ctrail_console_link = 'https://'+lambda_runtime_region+'.console.aws.amazon.com/cloudtrail/home?region='+lambda_runtime_region+'#/events/'+EventId
+                                    message = str("Event details logged in CloudTrail within 15 minutes before CI capture:"\
+                                                +"\n\nConfiguration Item status: "\
+                                                +configurationItemStatus\
+                                                +"\nConfiguration Item capture time: "\
+                                                +end_lookup_time\
+                                                +"\nResource ID: "\
+                                                +resourceId\
+                                                +"\nResource ARN: "\
+                                                +resourceARN\
+                                                +"\nResource Type: "\
+                                                +resourceType\
+                                                +"\n\nEvent ID: "\
+                                                +EventId\
+                                                +"\nEvent Time: "\
+                                                +str(EventTime)\
+                                                +"\nEvent Name: "\
+                                                +EventName\
+                                                +"\nUser Identity: "\
+                                                +userIdentity\
+                                                +"\n\nCloudTrail Event History console link:\n"\
+                                                +ctrail_console_link\
+                                                +"\n\nConfig Resources console link:\n"\
+                                                +config_console_link)
+                                    subject = "Config Configuration Item change detected"
+                                    sns_notification(message,subject)
+                                    print ("SNS notification sent - Events obtained from CloudTrail")
+                                    sns_check_bool = True
+                                    break
+                                else:
+                                    print ("ResourceType and ResourceName/Id do not match.")
+            
+                    # Conditional statement to check if previous SNS notification was sent.
+                    # Bool var "sns_check_bool" used for check.
+                    # if False, send notification that no events were found.
+                    if sns_check_bool == False:
+                        message = str("Script could not find any CloudTrail events within 15 minutes before CI capture for below resources. Check the Config Resources console link for more info."\
                                     +"\n\nConfiguration Item status: "\
                                     +configurationItemStatus\
                                     +"\nConfiguration Item capture time: "\
@@ -284,22 +378,23 @@ Resources:
                                     +resourceType\
                                     +"\n\nConfig Resources console link:\n"\
                                     +config_console_link)
-                      subject = "Config Configuration Item change detected"
-                      sns_notification(message,subject)
-                      print ("SNS notification sent - Events could not be obtained from CloudTrail for",resourceId,"//",resourceType)
-                  else:
-                      pass
-              except Exception as error:
-                  print (str(error))
-
-          def sns_notification(message,subject):
-              try:
-                  # Send SNS notifications
-                  topic = os.environ['SNSTopicARN']
-                  sns = boto3.client('sns')
-                  response_SNS = sns.publish(TopicArn=topic,Message=message,Subject=subject)
-              except Exception as error:
-                  print (str(error))
+                        subject = "Config Configuration Item change detected"
+                        sns_notification(message,subject)
+                        print ("SNS notification sent - Events could not be obtained from CloudTrail for",resourceId,"//",resourceType)
+                    else:
+                        pass
+                except Exception as error:
+                    print (str(error))
+            
+            def sns_notification(message,subject):
+                try:
+                    # Send SNS notifications
+                    topic = os.environ['SNSTopicARN']
+                    sns = boto3.client('sns')
+                    response_SNS = sns.publish(TopicArn=topic,Message=message,Subject=subject)
+                except Exception as error:
+                    print (str(error))
+            
       Handler: index.lambda_handler
       Runtime: python3.8
       Role: !GetAtt 'LookupCIEventsLambdaFunctionExecutionRole.Arn'
