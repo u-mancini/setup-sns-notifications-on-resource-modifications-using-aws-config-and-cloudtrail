@@ -26,7 +26,7 @@ Parameters:
   ResourceTypesToBeCapturedByCWERule:
     Type: CommaDelimitedList
     Description: The string list of resource types to be captured by the solution,
-      for example "AWS::S3::Bucket, AWS::EC2::Instance" (without quotation). If no
+      for example "AWS::S3::Bucket, AWS::EC2::Instance,AWS::WAFv2::" (without quotation). If no
       value is provided, default is the resources type(s) your ConfigurationRecorder
       is currently capturing.
     Default: <use default setting>
