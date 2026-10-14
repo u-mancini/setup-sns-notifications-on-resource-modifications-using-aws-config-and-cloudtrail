@@ -396,7 +396,7 @@ Resources:
                     print (str(error))
             
       Handler: index.lambda_handler
-      Runtime: python3.8
+      Runtime: python3.12
       Role: !GetAtt 'LookupCIEventsLambdaFunctionExecutionRole.Arn'
       Timeout: 30
       ReservedConcurrentExecutions: !If
